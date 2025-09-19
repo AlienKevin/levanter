@@ -399,7 +399,7 @@ class LevanterHarnessLM(LM):
             seeds.append(seed)
 
         # Tokenize prompts and compute capacity needs
-        print(f'{prompts=}')
+        # print(f'{prompts=}')
         enc = self.tokenizer(prompts, add_special_tokens=False)
         prompt_token_lists: list[list[int]] = enc["input_ids"]
 
@@ -426,22 +426,15 @@ class LevanterHarnessLM(LM):
                     {"stop_seq": 1}
                 )
 
-        # Determine engine memory: need to cover max(prompt_len + max_new_tokens)
-        max_total_len = 0
-        for toks, add in zip(prompt_token_lists, max_new_tokens_list):
-            max_total_len = max(max_total_len, len(toks) + add)
-        page_size = 128
-        max_pages_per_seq = int((max_total_len + page_size - 1) // page_size) or 1
-        max_n_gens = max(n_generations_list) if n_generations_list else 1
-        max_seqs = max(4, min(16, int(len(requests) * max_n_gens)))
-
+        # Taken from: config/sampler/sample_llama8b.yaml
         engine_cfg = InferenceEngineConfig(
-            max_seqs=max_seqs,
-            page_size=page_size,
-            max_pages_per_seq=max_pages_per_seq,
+            max_pages=16384,
+            max_seqs=256,
+            page_size=8,
+            max_pages_per_seq=512,
             compute_dtype=jnp.bfloat16,
-            max_queued_tokens=512,
-            max_seqs_in_prefill=min(16, max_seqs),
+            max_queued_tokens=256,
+            max_seqs_in_prefill=256,
             max_prefill_size=max_eval_len,
         )
 
