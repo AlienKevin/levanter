@@ -434,7 +434,7 @@ class LevanterHarnessLM(LM):
             max_pages_per_seq=512,
             compute_dtype=jnp.bfloat16,
             max_queued_tokens=256,
-            max_seqs_in_prefill=256,
+            max_seqs_in_prefill=16,
             max_prefill_size=max_eval_len,
         )
 

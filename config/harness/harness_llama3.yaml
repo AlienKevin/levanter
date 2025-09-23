@@ -9,13 +9,8 @@ checkpoint_path: meta-llama/Meta-Llama-3-8B
 checkpoint_is_hf: true
 trainer:
   mp: p=bfloat16,c=bfloat16
-  profiler: true
-
-  per_device_parallelism: -1
-  train_batch_size: 512
-
-  tensor_parallel_axes: ["mlp", "heads"]
-  fsdp_axis: "embed"
-  batch_axis: "batch"
   ray:
     auto_start_cluster: false
+  mp: p=bfloat16,c=bfloat16
+  tensor_parallel_axes: ["mlp", "heads", "kv_head", "vocab"]
+  model_axis_size: 4
