@@ -247,6 +247,47 @@ class LlamaConfig(HFCompatConfig):
             return self.head_dim
         return self.hidden_dim // self.num_heads
 
+    def vllm_mapping_config(self) -> "VllmMappingConfig":
+        """
+        Returns the vLLM mapping configuration for Llama models.
+
+        This defines how to map Levanter's Llama parameter names to vLLM's expected format.
+        vLLM uses HuggingFace's naming convention for Llama models. Levanter's state dict
+        already uses HF-compatible names (via _state_dict_key_map), so the mappings are
+        mostly identity mappings.
+
+        Returns:
+            VllmMappingConfig with parameter mappings for Llama
+        """
+        from levanter.compat.vllm_transfer import VllmMappingConfig
+
+        mappings = {
+            "model.embed_tokens.weight": "model.embed_tokens.weight",
+            "model.layers.*.self_attn.q_proj.weight": "model.layers.*.self_attn.q_proj.weight",
+            "model.layers.*.self_attn.k_proj.weight": "model.layers.*.self_attn.k_proj.weight",
+            "model.layers.*.self_attn.v_proj.weight": "model.layers.*.self_attn.v_proj.weight",
+            "model.layers.*.self_attn.o_proj.weight": "model.layers.*.self_attn.o_proj.weight",
+            "model.layers.*.mlp.gate_proj.weight": "model.layers.*.mlp.gate_proj.weight",
+            "model.layers.*.mlp.up_proj.weight": "model.layers.*.mlp.up_proj.weight",
+            "model.layers.*.mlp.down_proj.weight": "model.layers.*.mlp.down_proj.weight",
+            "model.layers.*.input_layernorm.weight": "model.layers.*.input_layernorm.weight",
+            "model.layers.*.post_attention_layernorm.weight": "model.layers.*.post_attention_layernorm.weight",
+            "model.norm.weight": "model.norm.weight",
+        }
+
+        if not self.tie_word_embeddings:
+            mappings["lm_head.weight"] = "lm_head.weight"
+
+        transpose_keys = set()
+
+        hook_fns = {}
+
+        return VllmMappingConfig(
+            to_vllm_mappings=mappings,
+            to_vllm_transpose_keys=transpose_keys,
+            to_vllm_hook_fns=hook_fns,
+        )
+
 
 class LlamaMlp(eqx.Module):
     """Multi-layer Perceptron
