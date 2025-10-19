@@ -248,6 +248,7 @@ class LlamaConfig(HFCompatConfig):
         return self.hidden_dim // self.num_heads
 
 
+
 class LlamaMlp(eqx.Module):
     """Multi-layer Perceptron
     In comparison with GPT2, LlamaMlp adds an up-proj that multiplies with activated gate_proj,

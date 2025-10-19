@@ -129,6 +129,7 @@ class Gpt2Config(HFCompatConfig):
         )
 
 
+
 class Gpt2Mlp(eqx.Module):
     c_fc: hnn.Linear  # projection from Embed to Intermediate (typically 4x Embed)
     c_proj: hnn.Linear  # projection from Intermediate to Embed
