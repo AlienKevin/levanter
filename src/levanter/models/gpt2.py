@@ -128,48 +128,6 @@ class Gpt2Config(HFCompatConfig):
             glu=False,
         )
 
-    def vllm_mapping_config(self) -> "VllmMappingConfig":
-        """
-        Returns the vLLM mapping configuration for GPT-2 models.
-
-        This defines how to map Levanter's GPT-2 parameter names to vLLM's expected format.
-        vLLM uses HuggingFace's naming convention for GPT-2. Levanter's state dict already
-        uses HF-compatible names (via _state_dict_key_map), so we just need to add the
-        "transformer." prefix to match vLLM's expected format.
-
-        Returns:
-            VllmMappingConfig with parameter mappings for GPT-2
-        """
-        from levanter.compat.vllm_transfer import VllmMappingConfig
-
-        mappings = {
-            "transformer.wte.weight": "wte.weight",
-            "transformer.wpe.weight": "wpe.weight",
-            "transformer.h.*.attn.c_attn.weight": "h.*.attn.c_attn.weight",
-            "transformer.h.*.attn.c_attn.bias": "h.*.attn.c_attn.bias",
-            "transformer.h.*.attn.c_proj.weight": "h.*.attn.c_proj.weight",
-            "transformer.h.*.attn.c_proj.bias": "h.*.attn.c_proj.bias",
-            "transformer.h.*.ln_1.weight": "h.*.ln_1.weight",
-            "transformer.h.*.ln_1.bias": "h.*.ln_1.bias",
-            "transformer.h.*.mlp.c_fc.weight": "h.*.mlp.c_fc.weight",
-            "transformer.h.*.mlp.c_fc.bias": "h.*.mlp.c_fc.bias",
-            "transformer.h.*.mlp.c_proj.weight": "h.*.mlp.c_proj.weight",
-            "transformer.h.*.mlp.c_proj.bias": "h.*.mlp.c_proj.bias",
-            "transformer.h.*.ln_2.weight": "h.*.ln_2.weight",
-            "transformer.h.*.ln_2.bias": "h.*.ln_2.bias",
-            "transformer.ln_f.weight": "ln_f.weight",
-            "transformer.ln_f.bias": "ln_f.bias",
-        }
-
-        transpose_keys = set()
-
-        hook_fns = {}
-
-        return VllmMappingConfig(
-            to_vllm_mappings=mappings,
-            to_vllm_transpose_keys=transpose_keys,
-            to_vllm_hook_fns=hook_fns,
-        )
 
 
 class Gpt2Mlp(eqx.Module):
