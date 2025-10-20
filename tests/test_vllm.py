@@ -125,63 +125,82 @@ def teardown_module(module):
     logger.info("Teardown complete - TPU resources released")
 
 
-@pytest.fixture(scope="module")
-def vllm_llm() -> LLM:
-    llm = LLM(
-        # model=QWEN_MODEL_ID,
-        # tokenizer=QWEN_MODEL_ID,
-        model=LLAMA_MODEL_ID,
-        tokenizer=LLAMA_MODEL_ID,
-        tensor_parallel_size=1,
-        seed=0,
-        max_model_len=256,
-    )
-    yield llm
-    # Cleanup: Delete the model and free TPU memory
-    logger.info("Cleaning up vllm_llm fixture - freeing TPU resources")
-    del llm
-    import gc
-    gc.collect()
+@dataclass(frozen=True)
+class GenerationTestCase:
+    name: str
+    model_id: str
+    expected_outputs: tuple[str, ...]
+    trust_remote_code: bool = False
 
 
-@pytest.fixture(scope="module")
-def vllm_llm_base() -> LLM:
-    llm = LLM(
-        # model=QWEN_MODEL_ID_BASE,
-        # tokenizer=QWEN_MODEL_ID_BASE,
-        model=LLAMA_MODEL_ID_BASE,
-        tokenizer=LLAMA_MODEL_ID_BASE,
-        tensor_parallel_size=1,
-        seed=0,
-        max_model_len=256,
-    )
-    yield llm
-    # Cleanup: Delete the model and free TPU memory
-    logger.info("Cleaning up vllm_llm_base fixture - freeing TPU resources")
-    del llm
-    import gc
-    gc.collect()
+GENERATION_TEST_CASES: tuple[GenerationTestCase, ...] = (
+    GenerationTestCase(
+        name="llama_base",
+        model_id=LLAMA_MODEL_ID_BASE,
+        expected_outputs=EXPECTED_OUTPUTS_LLAMA_BASE,
+    ),
+    GenerationTestCase(
+        name="llama_instruct",
+        model_id=LLAMA_MODEL_ID,
+        expected_outputs=EXPECTED_OUTPUTS_LLAMA_CHAT,
+    ),
+    GenerationTestCase(
+        name="qwen_base",
+        model_id=QWEN_MODEL_ID_BASE,
+        expected_outputs=EXPECTED_OUTPUTS_QWEN_BASE,
+        trust_remote_code=True,
+    ),
+    GenerationTestCase(
+        name="qwen_instruct",
+        model_id=QWEN_MODEL_ID,
+        expected_outputs=EXPECTED_OUTPUTS_QWEN_CHAT,
+        trust_remote_code=True,
+    ),
+)
 
 
-# uv run --extra tpu pytest tests/test_vllm.py --log-cli-level=INFO -s
-# # Swap out vllm_llm with vllm_llm_base to test Base model
-def test_vllm_model_generation(vllm_llm_base: LLM) -> None:
-    """Test that vLLM can generate from the model correctly."""
-
-    sampling_params = SamplingParams(temperature=0.0, max_tokens=MAX_NEW_TOKENS)
-    outputs = vllm_llm_base.generate(PROMPTS, sampling_params)
-
+def _assert_generation_outputs(outputs, expected_outputs: tuple[str, ...]) -> None:
     assert len(outputs) == len(PROMPTS)
-    for prompt, result, expected in zip(PROMPTS, outputs, EXPECTED_OUTPUTS_LLAMA_BASE, strict=True):
+    for prompt, result, expected in zip(PROMPTS, outputs, expected_outputs, strict=True):
         completion = result.outputs[0]
         logger.info("Prompt %r -> %r", prompt, completion.text)
         assert completion.token_ids, f"No tokens generated for prompt: {prompt}"
         assert completion.text.strip(), f"No text generated for prompt: {prompt}"
-        # Verify output matches expected
         assert completion.text == expected, (
             f"Output mismatch for prompt {prompt!r}: "
             f"expected {expected!r}, got {completion.text!r}"
         )
+
+
+def _run_generation_test_case(case: GenerationTestCase) -> None:
+    logger.info("Running vLLM generation test for %s (%s)", case.model_id, case.name)
+    sampling_params = SamplingParams(temperature=0.0, max_tokens=MAX_NEW_TOKENS)
+    llm = LLM(
+        model=case.model_id,
+        tokenizer=case.model_id,
+        tensor_parallel_size=1,
+        seed=0,
+        max_model_len=256,
+        trust_remote_code=case.trust_remote_code,
+    )
+    try:
+        outputs = llm.generate(PROMPTS, sampling_params)
+        _assert_generation_outputs(outputs, case.expected_outputs)
+    finally:
+        logger.info("Cleaning up vLLM model for %s", case.name)
+        del llm
+        import gc
+        gc.collect()
+
+        time.sleep(10)
+
+
+@pytest.mark.parametrize("case", GENERATION_TEST_CASES, ids=lambda case: case.name)
+def test_vllm_model_generation(case: GenerationTestCase) -> None:
+    """Test that vLLM can generate from the model correctly."""
+
+    _run_generation_test_case(case)
+
 
 def _target_key_to_hf_key(path_str: str) -> str | None:
     if path_str.startswith("model.embed.embedding"):
