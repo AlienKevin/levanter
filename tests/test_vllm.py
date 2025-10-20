@@ -139,11 +139,11 @@ def test_levanter_weight_transfer_to_vllm() -> None:
     Test weight transfer from Levanter to vLLM.
 
     This test:
-    1. Loads the vLLM model with the Qwen3-0.6B chat model weights
-    2. Loads the Qwen3-0.6B-Base checkpoint into Levanter
-    3. Transfers weights directly into the live vLLM model state
+    1. Loads the vLLM model with the Qwen3-0.6B base model weights
+    2. Loads the Qwen3-0.6B chat weights into Levanter
+    3. Transfers weights directly into the live vLLM model state from Levanter
     4. Verifies that generation outputs match the expected outputs
-       of the Base model rather than the initial chat model
+       of the updated chat model
     """
 
     pytest.importorskip("levanter")
@@ -198,24 +198,26 @@ def test_levanter_weight_transfer_to_vllm() -> None:
         def flat_state(self):
             return self._entries
 
-    logger.info("Loading vLLM model with chat weights: %s", MODEL_ID)
+    logger.info("Loading vLLM model with base weights: %s", MODEL_ID_BASE)
     vllm_model = LLM(
-        model=MODEL_ID,
-        tokenizer=MODEL_ID,
+        model=MODEL_ID_BASE,
+        tokenizer=MODEL_ID_BASE,
         tensor_parallel_size=1,
         seed=0,
         max_model_len=256,
+        trust_remote_code=True,
     )
 
-    logger.info("Validating chat weights before transfer")
     sampling_params = SamplingParams(temperature=0.0, max_tokens=MAX_NEW_TOKENS)
-    chat_outputs = vllm_model.generate(PROMPTS, sampling_params)
-    assert len(chat_outputs) == len(PROMPTS)
-    for prompt, result, expected in zip(PROMPTS, chat_outputs, EXPECTED_OUTPUTS_CHAT, strict=True):
+
+    logger.info("Validating base weights before transfer")
+    base_outputs = vllm_model.generate(PROMPTS, sampling_params)
+    assert len(base_outputs) == len(PROMPTS)
+    for prompt, result, expected in zip(PROMPTS, base_outputs, EXPECTED_OUTPUTS_BASE, strict=True):
         completion = result.outputs[0]
-        logger.info("Chat prompt %r -> %r", prompt, completion.text)
+        logger.info("Base prompt %r -> %r", prompt, completion.text)
         assert completion.text == expected, (
-            f"Chat output mismatch for prompt {prompt!r}: "
+            f"Base output mismatch for prompt {prompt!r}: "
             f"expected {expected!r}, got {completion.text!r}"
         )
 
@@ -223,14 +225,14 @@ def test_levanter_weight_transfer_to_vllm() -> None:
     target_state = runner.state
     target_flat = list(target_state.flat_state())
 
-    logger.info("Loading Levanter base model: %s", MODEL_ID_BASE)
-    hf_model = AutoModelForCausalLM.from_pretrained(MODEL_ID_BASE, trust_remote_code=True)
+    logger.info("Loading Levanter chat model: %s", MODEL_ID)
+    hf_model = AutoModelForCausalLM.from_pretrained(MODEL_ID, trust_remote_code=True)
     hf_config = hf_model.config
     lev_config = Qwen3Config.from_hf_config(hf_config)
-    converter = lev_config.hf_checkpoint_converter(ref_checkpoint=MODEL_ID_BASE)
+    converter = lev_config.hf_checkpoint_converter(ref_checkpoint=MODEL_ID)
     lev_model = converter.load_pretrained(
         lm_model_cls=Qwen3LMHeadModel,
-        ref=MODEL_ID_BASE,
+        ref=MODEL_ID,
         resize_vocab_to_match_tokenizer=False,
     )
     lev_state = _to_state_dict_with_dtype(lev_model, None, None)
@@ -279,7 +281,7 @@ def test_levanter_weight_transfer_to_vllm() -> None:
     outputs = vllm_model.generate(PROMPTS, sampling_params)
 
     assert len(outputs) == len(PROMPTS)
-    for prompt, result, expected in zip(PROMPTS, outputs, EXPECTED_OUTPUTS_BASE, strict=True):
+    for prompt, result, expected in zip(PROMPTS, outputs, EXPECTED_OUTPUTS_CHAT, strict=True):
         completion = result.outputs[0]
         logger.info("Prompt %r -> %r", prompt, completion.text)
         assert completion.text == expected, (
