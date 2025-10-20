@@ -8,8 +8,12 @@ import logging
 import tempfile
 from pathlib import Path
 import time
+import os
 
 import jax
+
+# Colocate vllm engine and worker in the main process
+os.environ["VLLM_ENABLE_V1_MULTIPROCESSING"] = "0"
 
 logger = logging.getLogger(__name__)
 
