@@ -33,6 +33,17 @@ def vllm_llm() -> LLM:
     )
 
 # uv run --extra tpu pytest tests/test_vllm.py --log-cli-level=INFO
+"""
+Qwen/Qwen3-0.6B
+'Hello, my name is' -> " Lina. I'm a 2"
+'The capital of France is' -> ' Paris. The capital of Italy is Rome'
+'In a distant future, humanity' -> ' has developed a new technology called "Quant'
+
+Qwen/Qwen3-0.6B-Base
+'Hello, my name is' -> ' John. I am a student at the'
+'The capital of France is' -> ' Paris. The capital of Germany is Berlin'
+'In a distant future, humanity' -> ' has developed a new technology that allows them'
+"""
 def test_vllm_tpu_greedy_generation(vllm_llm: LLM) -> None:
     sampling_params = SamplingParams(temperature=0.0, max_tokens=MAX_NEW_TOKENS)
     outputs = vllm_llm.generate(PROMPTS, sampling_params)
