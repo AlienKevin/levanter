@@ -5,12 +5,12 @@ from __future__ import annotations
 
 import pytest
 import logging
-import tempfile
-from pathlib import Path
 import time
 import os
 
 import jax
+import jax.numpy as jnp
+from flax import nnx
 
 # Colocate vllm engine and worker in the main process
 os.environ["VLLM_ENABLE_V1_MULTIPROCESSING"] = "0"
@@ -139,78 +139,144 @@ def test_levanter_weight_transfer_to_vllm() -> None:
     Test weight transfer from Levanter to vLLM.
 
     This test:
-    1. Loads Qwen3-0.6B-Base model into Levanter
-    2. Converts Levanter weights to HuggingFace format
-    3. Loads the converted weights into vLLM
+    1. Loads the vLLM model with the Qwen3-0.6B chat model weights
+    2. Loads the Qwen3-0.6B-Base checkpoint into Levanter
+    3. Transfers weights directly into the live vLLM model state
     4. Verifies that generation outputs match the expected outputs
+       of the Base model rather than the initial chat model
     """
 
     pytest.importorskip("levanter")
 
     from levanter.models.qwen import Qwen3Config, Qwen3LMHeadModel
-    from levanter.compat.hf_checkpoints import HFCheckpointConverter
+    from levanter.compat.hf_checkpoints import _to_state_dict_with_dtype
+    from tpu_inference.models.jax.utils.weight_utils import shard_put, transfer_state_with_mappings
     from transformers import AutoModelForCausalLM
+    logging.getLogger("tpu_inference").setLevel(logging.WARNING)
 
-    with tempfile.TemporaryDirectory() as tmpdir:
-        tmpdir_path = Path(tmpdir)
-        hf_output_dir = tmpdir_path / "hf_output"
-        hf_output_dir.mkdir(parents=True)
+    def _target_key_to_hf_key(path_str: str) -> str | None:
+        if path_str.startswith("model.embed.embedding"):
+            return "model.embed_tokens.weight"
+        if path_str.startswith("model.") and path_str.endswith(".scale"):
+            return path_str.replace(".scale", ".weight")
+        if path_str.startswith("model.") and path_str.endswith(".kernel"):
+            return path_str.replace(".kernel", ".weight")
+        return None
 
-        # Step 1: Load HF model config and convert to Levanter
-        logger.info("Loading HF config from %s", MODEL_ID_BASE)
-        hf_model = AutoModelForCausalLM.from_pretrained(MODEL_ID_BASE, trust_remote_code=True)
-        hf_config = hf_model.config
+    def _reshape_weight(
+        hf_key: str,
+        value,
+        target_shape: tuple[int, ...],
+        lev_config: Qwen3Config,
+    ):
+        if value.shape == target_shape:
+            return value
+        if value.ndim == 2 and value.shape[::-1] == target_shape:
+            return value.T
 
-        # Create Levanter config from HF config
-        lev_config = Qwen3Config.from_hf_config(hf_config)
-        logger.info("Created Levanter config: %s", lev_config)
+        hidden_size = lev_config.hidden_dim
+        head_dim = lev_config.head_dim or (hidden_size // lev_config.num_heads)
 
-        # Step 2: Get the converter and load HF weights into Levanter
-        converter = lev_config.hf_checkpoint_converter(ref_checkpoint=MODEL_ID_BASE)
-        logger.info("Loading Levanter model from HF checkpoint: %s", MODEL_ID_BASE)
-        lev_model = converter.load_pretrained(
-            lm_model_cls=Qwen3LMHeadModel,
-            ref=MODEL_ID_BASE,
-            resize_vocab_to_match_tokenizer=False,
+        if hf_key.endswith("self_attn.q_proj.weight"):
+            reshaped = value.reshape(lev_config.num_heads, head_dim, hidden_size)
+            return jnp.transpose(reshaped, (2, 0, 1))
+
+        if hf_key.endswith("self_attn.k_proj.weight") or hf_key.endswith("self_attn.v_proj.weight"):
+            reshaped = value.reshape(lev_config.num_kv_heads, head_dim, hidden_size)
+            return jnp.transpose(reshaped, (2, 0, 1))
+
+        if hf_key.endswith("self_attn.o_proj.weight"):
+            reshaped = value.reshape(hidden_size, lev_config.num_heads, head_dim)
+            return jnp.transpose(reshaped, (1, 2, 0))
+
+        raise ValueError(f"Unexpected reshape for {hf_key}: {value.shape} -> {target_shape}")
+
+    class _StateWrapper:
+        def __init__(self, entries):
+            self._entries = entries
+
+        def flat_state(self):
+            return self._entries
+
+    logger.info("Loading vLLM model with chat weights: %s", MODEL_ID)
+    vllm_model = LLM(
+        model=MODEL_ID,
+        tokenizer=MODEL_ID,
+        tensor_parallel_size=1,
+        seed=0,
+        max_model_len=256,
+    )
+
+    runner = vllm_model.llm_engine.model_executor.driver_worker.model_runner
+    target_state = runner.state
+    target_flat = list(target_state.flat_state())
+
+    logger.info("Loading Levanter base model: %s", MODEL_ID_BASE)
+    hf_model = AutoModelForCausalLM.from_pretrained(MODEL_ID_BASE, trust_remote_code=True)
+    hf_config = hf_model.config
+    lev_config = Qwen3Config.from_hf_config(hf_config)
+    converter = lev_config.hf_checkpoint_converter(ref_checkpoint=MODEL_ID_BASE)
+    lev_model = converter.load_pretrained(
+        lm_model_cls=Qwen3LMHeadModel,
+        ref=MODEL_ID_BASE,
+        resize_vocab_to_match_tokenizer=False,
+    )
+    lev_state = _to_state_dict_with_dtype(lev_model, None, None)
+
+    del hf_model  # free HF model weights early
+
+    logger.info("Preparing mapping for weight transfer")
+    src_entries = []
+    mappings: dict[str, tuple[str, any]] = {}
+
+    for target_path, param in target_flat:
+        target_key = ".".join(str(part) for part in target_path)
+        if target_key.startswith("rng."):
+            continue
+
+        hf_key = _target_key_to_hf_key(target_key)
+        if hf_key is None:
+            continue
+
+        value = lev_state.get(hf_key)
+        if value is None:
+            logger.debug("No HF value for %s (target %s)", hf_key, target_key)
+            continue
+
+        reshaped = _reshape_weight(hf_key, value, param.value.shape, lev_config)
+        if reshaped.dtype != param.value.dtype:
+            reshaped = reshaped.astype(param.value.dtype)
+
+        src_entries.append((tuple(hf_key.split(".")), nnx.Param(reshaped)))
+        mappings[hf_key] = (target_key, param.value.sharding)
+
+    assert mappings, "No mappings constructed for weight transfer"
+
+    src_state = _StateWrapper(src_entries)
+    mesh = runner.mesh
+
+    logger.info("Transferring weights from Levanter to vLLM")
+    runner.state = transfer_state_with_mappings(
+        src_state,
+        target_state,
+        mappings,
+        shard=lambda array, sharding: shard_put(array, sharding, mesh),
+    )
+
+    logger.info("Running generation to validate transfer")
+    sampling_params = SamplingParams(temperature=0.0, max_tokens=MAX_NEW_TOKENS)
+    outputs = vllm_model.generate(PROMPTS, sampling_params)
+
+    assert len(outputs) == len(PROMPTS)
+    for prompt, result, expected in zip(PROMPTS, outputs, EXPECTED_OUTPUTS_BASE, strict=True):
+        completion = result.outputs[0]
+        logger.info("Prompt %r -> %r", prompt, completion.text)
+        assert completion.text == expected, (
+            f"Output mismatch for prompt {prompt!r}: "
+            f"expected {expected!r}, got {completion.text!r}"
         )
-        logger.info("Successfully loaded Levanter model")
 
-        # Step 3: Convert Levanter model back to HF format
-        logger.info("Converting Levanter model to HF format")
-        converter.save_pretrained(
-            lev_model,
-            str(hf_output_dir),
-        )
-        logger.info("Successfully saved HF model to %s", hf_output_dir)
-
-        # Step 4: Load the converted model into vLLM
-        logger.info("Loading converted model into vLLM from %s", hf_output_dir)
-        vllm_model = LLM(
-            model=str(hf_output_dir),
-            tokenizer=MODEL_ID_BASE,
-            tensor_parallel_size=1,
-            seed=0,
-            max_model_len=256,
-            trust_remote_code=True,
-        )
-        logger.info("Successfully loaded vLLM model")
-
-        # Step 5: Run generation and verify outputs
-        sampling_params = SamplingParams(temperature=0.0, max_tokens=MAX_NEW_TOKENS)
-        outputs = vllm_model.generate(PROMPTS, sampling_params)
-
-        assert len(outputs) == len(PROMPTS)
-        for prompt, result, expected in zip(PROMPTS, outputs, EXPECTED_OUTPUTS_BASE, strict=True):
-            completion = result.outputs[0]
-            logger.info("Prompt %r -> %r", prompt, completion.text)
-            # Verify output matches expected
-            assert completion.text == expected, (
-                f"Output mismatch for prompt {prompt!r}: "
-                f"expected {expected!r}, got {completion.text!r}"
-            )
-
-        # Cleanup: Explicitly delete the vLLM model to free TPU resources
-        logger.info("Cleaning up test - freeing TPU resources from vLLM model")
-        del vllm_model
-        import gc
-        gc.collect()
+    logger.info("Cleaning up test - freeing TPU resources from vLLM model")
+    del vllm_model
+    import gc
+    gc.collect()
