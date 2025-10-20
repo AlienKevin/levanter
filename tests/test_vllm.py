@@ -207,6 +207,18 @@ def test_levanter_weight_transfer_to_vllm() -> None:
         max_model_len=256,
     )
 
+    logger.info("Validating chat weights before transfer")
+    sampling_params = SamplingParams(temperature=0.0, max_tokens=MAX_NEW_TOKENS)
+    chat_outputs = vllm_model.generate(PROMPTS, sampling_params)
+    assert len(chat_outputs) == len(PROMPTS)
+    for prompt, result, expected in zip(PROMPTS, chat_outputs, EXPECTED_OUTPUTS_CHAT, strict=True):
+        completion = result.outputs[0]
+        logger.info("Chat prompt %r -> %r", prompt, completion.text)
+        assert completion.text == expected, (
+            f"Chat output mismatch for prompt {prompt!r}: "
+            f"expected {expected!r}, got {completion.text!r}"
+        )
+
     runner = vllm_model.llm_engine.model_executor.driver_worker.model_runner
     target_state = runner.state
     target_flat = list(target_state.flat_state())
@@ -264,7 +276,6 @@ def test_levanter_weight_transfer_to_vllm() -> None:
     )
 
     logger.info("Running generation to validate transfer")
-    sampling_params = SamplingParams(temperature=0.0, max_tokens=MAX_NEW_TOKENS)
     outputs = vllm_model.generate(PROMPTS, sampling_params)
 
     assert len(outputs) == len(PROMPTS)
