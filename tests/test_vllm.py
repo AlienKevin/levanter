@@ -232,6 +232,16 @@ def _target_key_to_hf_key(path_str: str) -> str | None:
     return None
 
 
+def _pad_head_dim(array, head_dim: int, axis: int):
+    """Pad head_dim to next multiple of 128 for vLLM compatibility."""
+    next_multiple_of_128 = ((head_dim + 127) // 128) * 128
+    if head_dim < next_multiple_of_128:
+        pad_width = [(0, 0)] * array.ndim
+        pad_width[axis] = (0, next_multiple_of_128 - head_dim)
+        return jnp.pad(array, pad_width)
+    return array
+
+
 def _reshape_weight(
     hf_key: str,
     value,
@@ -249,29 +259,17 @@ def _reshape_weight(
     if hf_key.endswith("self_attn.q_proj.weight"):
         reshaped = value.reshape(lev_config.num_heads, head_dim, hidden_size)
         reshaped = jnp.transpose(reshaped, (2, 0, 1))
-        # Pad head_dim to next multiple of 128 for vLLM
-        next_multiple_of_128 = ((head_dim + 127) // 128) * 128
-        if head_dim < next_multiple_of_128:
-            reshaped = jnp.pad(reshaped, ((0, 0), (0, 0), (0, next_multiple_of_128 - head_dim)))
-        return reshaped
+        return _pad_head_dim(reshaped, head_dim, axis=2)
 
     if hf_key.endswith("self_attn.k_proj.weight") or hf_key.endswith("self_attn.v_proj.weight"):
         reshaped = value.reshape(lev_config.num_kv_heads, head_dim, hidden_size)
         reshaped = jnp.transpose(reshaped, (2, 0, 1))
-        # Pad head_dim to next multiple of 128 for vLLM
-        next_multiple_of_128 = ((head_dim + 127) // 128) * 128
-        if head_dim < next_multiple_of_128:
-            reshaped = jnp.pad(reshaped, ((0, 0), (0, 0), (0, next_multiple_of_128 - head_dim)))
-        return reshaped
+        return _pad_head_dim(reshaped, head_dim, axis=2)
 
     if hf_key.endswith("self_attn.o_proj.weight"):
         reshaped = value.reshape(hidden_size, lev_config.num_heads, head_dim)
         reshaped = jnp.transpose(reshaped, (1, 2, 0))
-        # Pad head_dim to next multiple of 128 for vLLM
-        next_multiple_of_128 = ((head_dim + 127) // 128) * 128
-        if head_dim < next_multiple_of_128:
-            reshaped = jnp.pad(reshaped, ((0, 0), (0, next_multiple_of_128 - head_dim), (0, 0)))
-        return reshaped
+        return _pad_head_dim(reshaped, head_dim, axis=1)
 
     raise ValueError(f"Unexpected reshape for {hf_key}: {value.shape} -> {target_shape}")
 
