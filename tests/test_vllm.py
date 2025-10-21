@@ -5,7 +5,6 @@ from __future__ import annotations
 
 import logging
 import os
-import time
 from dataclasses import dataclass
 from typing import Any, Type
 
@@ -173,6 +172,7 @@ def _assert_generation_outputs(outputs, expected_outputs: tuple[str, ...]) -> No
 
 def _run_generation_test_case(case: GenerationTestCase) -> None:
     logger.info("Running vLLM generation test for %s (%s)", case.model_id, case.name)
+    
     sampling_params = SamplingParams(temperature=0.0, max_tokens=MAX_NEW_TOKENS)
     llm = LLM(
         model=case.model_id,
@@ -181,6 +181,7 @@ def _run_generation_test_case(case: GenerationTestCase) -> None:
         seed=0,
         max_model_len=256,
         trust_remote_code=case.trust_remote_code,
+        enforce_eager=True,
     )
     try:
         outputs = llm.generate(PROMPTS, sampling_params)
@@ -188,11 +189,6 @@ def _run_generation_test_case(case: GenerationTestCase) -> None:
     finally:
         logger.info("Cleaning up vLLM model for %s", case.name)
         del llm
-        import gc
-        gc.collect()
-        
-        # Wait for TPU memory to be released
-        time.sleep(10)
 
 
 # Parametized test always fails on vLLM HBM usage exceeding limit, no matter how much HBM we allocated to it,
@@ -201,24 +197,25 @@ def _run_generation_test_case(case: GenerationTestCase) -> None:
 # Jax properly, therefore the 2nd test adds on top of the previous HBM usage. This is the workaround for that.
 # cf: https://github.com/google/tunix/blob/2b4ec654fa75c1f261f016e451066323de4dda7a/tests/generate/vllm_sampler_test.py#L87
 
+@pytest.mark.forked
 def test_vllm_model_generation_llama_base() -> None:
     """Test that vLLM can generate from Llama base model correctly."""
     case = GENERATION_TEST_CASES[0]  # llama_base
     _run_generation_test_case(case)
 
-
+@pytest.mark.forked
 def test_vllm_model_generation_llama_instruct() -> None:
     """Test that vLLM can generate from Llama instruct model correctly."""
     case = GENERATION_TEST_CASES[1]  # llama_instruct
     _run_generation_test_case(case)
 
-
+@pytest.mark.forked
 def test_vllm_model_generation_qwen_base() -> None:
     """Test that vLLM can generate from Qwen base model correctly."""
     case = GENERATION_TEST_CASES[2]  # qwen_base
     _run_generation_test_case(case)
 
-
+@pytest.mark.forked
 def test_vllm_model_generation_qwen_instruct() -> None:
     """Test that vLLM can generate from Qwen instruct model correctly."""
     case = GENERATION_TEST_CASES[3]  # qwen_instruct
@@ -294,6 +291,7 @@ def _run_weight_transfer_test(case: WeightTransferTestCase) -> None:
         seed=0,
         max_model_len=256,
         trust_remote_code=True,
+        enforce_eager=True,
     )
 
     sampling_params = SamplingParams(temperature=0.0, max_tokens=MAX_NEW_TOKENS)
@@ -362,24 +360,19 @@ def _run_weight_transfer_test(case: WeightTransferTestCase) -> None:
     outputs = vllm_model.generate(PROMPTS, sampling_params)
     _assert_outputs(outputs, case.expected_chat_outputs, "Chat", case)
 
-    logger.info("Cleaning up test - freeing TPU resources from vLLM model (%s)", case.name)
     del vllm_model
-    import gc
-    gc.collect()
-
-    # Wait longer until vLLM is deallocated and TPU memory is released
-    time.sleep(10)
 
 
 # Parametized test always fails on vLLM HBM usage exceeding limit, no matter how much HBM we allocated to it,
 # and no matter how we clear the Jax cache. This is the workaround: use separate test functions.
 
+@pytest.mark.forked
 def test_levanter_weight_transfer_to_vllm_llama3_1b() -> None:
     """Test weight transfer from Levanter to vLLM for Llama 3.2 1B."""
     case = TEST_CASES[0]  # llama3_1b
     _run_weight_transfer_test(case)
 
-
+@pytest.mark.forked
 def test_levanter_weight_transfer_to_vllm_qwen3_0_6b() -> None:
     """Test weight transfer from Levanter to vLLM for Qwen3 0.6B."""
     case = TEST_CASES[1]  # qwen3_0_6b
