@@ -248,15 +248,30 @@ def _reshape_weight(
 
     if hf_key.endswith("self_attn.q_proj.weight"):
         reshaped = value.reshape(lev_config.num_heads, head_dim, hidden_size)
-        return jnp.transpose(reshaped, (2, 0, 1))
+        reshaped = jnp.transpose(reshaped, (2, 0, 1))
+        # Pad head_dim to next multiple of 128 for vLLM
+        next_multiple_of_128 = ((head_dim + 127) // 128) * 128
+        if head_dim < next_multiple_of_128:
+            reshaped = jnp.pad(reshaped, ((0, 0), (0, 0), (0, next_multiple_of_128 - head_dim)))
+        return reshaped
 
     if hf_key.endswith("self_attn.k_proj.weight") or hf_key.endswith("self_attn.v_proj.weight"):
         reshaped = value.reshape(lev_config.num_kv_heads, head_dim, hidden_size)
-        return jnp.transpose(reshaped, (2, 0, 1))
+        reshaped = jnp.transpose(reshaped, (2, 0, 1))
+        # Pad head_dim to next multiple of 128 for vLLM
+        next_multiple_of_128 = ((head_dim + 127) // 128) * 128
+        if head_dim < next_multiple_of_128:
+            reshaped = jnp.pad(reshaped, ((0, 0), (0, 0), (0, next_multiple_of_128 - head_dim)))
+        return reshaped
 
     if hf_key.endswith("self_attn.o_proj.weight"):
         reshaped = value.reshape(hidden_size, lev_config.num_heads, head_dim)
-        return jnp.transpose(reshaped, (1, 2, 0))
+        reshaped = jnp.transpose(reshaped, (1, 2, 0))
+        # Pad head_dim to next multiple of 128 for vLLM
+        next_multiple_of_128 = ((head_dim + 127) // 128) * 128
+        if head_dim < next_multiple_of_128:
+            reshaped = jnp.pad(reshaped, ((0, 0), (0, next_multiple_of_128 - head_dim), (0, 0)))
+        return reshaped
 
     raise ValueError(f"Unexpected reshape for {hf_key}: {value.shape} -> {target_shape}")
 
