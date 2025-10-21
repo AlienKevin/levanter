@@ -16,6 +16,8 @@ from flax import nnx
 
 # Colocate vllm engine and worker in the main process
 os.environ["VLLM_ENABLE_V1_MULTIPROCESSING"] = "0"
+# cf: https://github.com/google/tunix/blob/2b4ec654fa75c1f261f016e451066323de4dda7a/tests/generate/vllm_sampler_test.py#L41C1-L41C40
+os.environ["SKIP_JAX_PRECOMPILE"] = "1"
 
 logger = logging.getLogger(__name__)
 
@@ -119,9 +121,6 @@ def teardown_module(module):
     import gc
     gc.collect()
 
-    # Wait a bit for resources to be released
-    time.sleep(1)
-
     logger.info("Teardown complete - TPU resources released")
 
 
@@ -191,14 +190,38 @@ def _run_generation_test_case(case: GenerationTestCase) -> None:
         del llm
         import gc
         gc.collect()
-
+        
+        # Wait for TPU memory to be released
         time.sleep(10)
 
 
-@pytest.mark.parametrize("case", GENERATION_TEST_CASES, ids=lambda case: case.name)
-def test_vllm_model_generation(case: GenerationTestCase) -> None:
-    """Test that vLLM can generate from the model correctly."""
+# Parametized test always fails on vLLM HBM usage exceeding limit, no matter how much HBM we allocated to it,
+# and no matter how we clear the Jax cache (delete all the live arrays, gc collect, clear cache, clear test cache).
+# vLLM will allocate all the assigned HBM to weights + KV cache. The conclusion is parametized test doesn't reset
+# Jax properly, therefore the 2nd test adds on top of the previous HBM usage. This is the workaround for that.
+# cf: https://github.com/google/tunix/blob/2b4ec654fa75c1f261f016e451066323de4dda7a/tests/generate/vllm_sampler_test.py#L87
 
+def test_vllm_model_generation_llama_base() -> None:
+    """Test that vLLM can generate from Llama base model correctly."""
+    case = GENERATION_TEST_CASES[0]  # llama_base
+    _run_generation_test_case(case)
+
+
+def test_vllm_model_generation_llama_instruct() -> None:
+    """Test that vLLM can generate from Llama instruct model correctly."""
+    case = GENERATION_TEST_CASES[1]  # llama_instruct
+    _run_generation_test_case(case)
+
+
+def test_vllm_model_generation_qwen_base() -> None:
+    """Test that vLLM can generate from Qwen base model correctly."""
+    case = GENERATION_TEST_CASES[2]  # qwen_base
+    _run_generation_test_case(case)
+
+
+def test_vllm_model_generation_qwen_instruct() -> None:
+    """Test that vLLM can generate from Qwen instruct model correctly."""
+    case = GENERATION_TEST_CASES[3]  # qwen_instruct
     _run_generation_test_case(case)
 
 
@@ -344,14 +367,20 @@ def _run_weight_transfer_test(case: WeightTransferTestCase) -> None:
     import gc
     gc.collect()
 
-    # Wait until vLLM is deallocated
+    # Wait longer until vLLM is deallocated and TPU memory is released
     time.sleep(10)
 
 
-@pytest.mark.parametrize("case", TEST_CASES, ids=lambda case: case.name)
-def test_levanter_weight_transfer_to_vllm(case: WeightTransferTestCase) -> None:
-    """
-    Test weight transfer from Levanter to vLLM for different model families.
-    """
+# Parametized test always fails on vLLM HBM usage exceeding limit, no matter how much HBM we allocated to it,
+# and no matter how we clear the Jax cache. This is the workaround: use separate test functions.
 
+def test_levanter_weight_transfer_to_vllm_llama3_1b() -> None:
+    """Test weight transfer from Levanter to vLLM for Llama 3.2 1B."""
+    case = TEST_CASES[0]  # llama3_1b
+    _run_weight_transfer_test(case)
+
+
+def test_levanter_weight_transfer_to_vllm_qwen3_0_6b() -> None:
+    """Test weight transfer from Levanter to vLLM for Qwen3 0.6B."""
+    case = TEST_CASES[1]  # qwen3_0_6b
     _run_weight_transfer_test(case)
